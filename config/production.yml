@@ -1,0 +1,342 @@
+# Production Configuration for PR Analysis & CI/CD Automation System
+
+# Server Configuration
+server:
+  host: "0.0.0.0"
+  port: ${PORT:8080}
+  read_timeout: 30s
+  write_timeout: 30s
+  idle_timeout: 120s
+  max_header_bytes: 1048576  # 1MB
+
+# Database Configuration
+database:
+  url: ${DATABASE_URL}
+  max_connections: ${DB_MAX_CONNECTIONS:20}
+  max_idle_connections: ${DB_MAX_IDLE_CONNECTIONS:5}
+  connection_timeout: 30s
+  query_timeout: 60s
+  ssl_mode: ${DB_SSL_MODE:require}
+  
+  # Connection pool settings
+  pool:
+    max_lifetime: 1h
+    max_idle_time: 30m
+
+# Analysis Engine Configuration
+analysis:
+  # Execution settings
+  parallel_jobs: ${ANALYSIS_PARALLEL_JOBS:4}
+  timeout: ${ANALYSIS_TIMEOUT:600s}
+  max_queue_size: ${ANALYSIS_MAX_QUEUE_SIZE:100}
+  
+  # Module settings
+  modules:
+    static_analysis:
+      enabled: true
+      timeout: 300s
+      parallel: true
+    
+    dynamic_analysis:
+      enabled: true
+      timeout: 600s
+      parallel: false
+    
+    security_analysis:
+      enabled: true
+      timeout: 450s
+      parallel: true
+    
+    performance_analysis:
+      enabled: true
+      timeout: 900s
+      parallel: false
+  
+  # Caching
+  cache:
+    enabled: true
+    ttl: ${ANALYSIS_CACHE_TTL:3600s}
+    max_size: ${ANALYSIS_CACHE_MAX_SIZE:1000}
+  
+  # File processing
+  file_limits:
+    max_file_size: 10MB
+    max_total_size: 500MB
+    excluded_extensions: [".jpg", ".png", ".gif", ".pdf", ".zip"]
+    excluded_directories: ["node_modules", ".git", "dist", "build"]
+
+# Webhook Configuration
+webhook:
+  port: ${WEBHOOK_PORT:8080}
+  secret: ${WEBHOOK_SECRET}
+  timeout: 30s
+  max_payload_size: 10MB
+  
+  # Rate limiting
+  rate_limit:
+    enabled: true
+    requests_per_minute: 100
+    burst_size: 20
+  
+  # Retry configuration
+  retry:
+    max_attempts: 3
+    backoff_strategy: exponential
+    base_delay: 1s
+    max_delay: 30s
+
+# AgentAPI Integration
+agentapi:
+  enabled: ${AGENTAPI_ENABLED:true}
+  url: ${AGENTAPI_URL:http://localhost:3284}
+  timeout: 300s
+  
+  # Agent configuration
+  agent:
+    type: ${AGENT_TYPE:claude}
+    max_sessions: ${AGENT_MAX_SESSIONS:5}
+    session_timeout: 1800s
+  
+  # Auto-fix settings
+  auto_fix:
+    enabled: ${AUTO_FIX_ENABLED:true}
+    max_concurrent_fixes: 3
+    timeout: 600s
+    create_pr: true
+    pr_branch_prefix: "automated-fix/"
+
+# Linear Integration
+linear:
+  enabled: ${LINEAR_ENABLED:true}
+  api_key: ${LINEAR_API_KEY}
+  api_url: "https://api.linear.app/graphql"
+  timeout: 30s
+  
+  # Default settings
+  defaults:
+    team_id: ${LINEAR_TEAM_ID}
+    project_id: ${LINEAR_PROJECT_ID}
+    
+  # Issue creation settings
+  issue_creation:
+    auto_create: ${LINEAR_AUTO_CREATE:true}
+    batch_size: 10
+    priority_mapping:
+      critical: 1  # Urgent
+      high: 2      # High
+      medium: 3    # Medium
+      low: 4       # Low
+  
+  # Templates
+  templates:
+    static_analysis: "templates/linear/static_analysis_issue.md"
+    security_issue: "templates/linear/security_issue.md"
+    performance_issue: "templates/linear/performance_issue.md"
+    general_issue: "templates/linear/general_issue.md"
+
+# GitHub Integration
+github:
+  enabled: ${GITHUB_ENABLED:true}
+  api_url: "https://api.github.com"
+  timeout: 30s
+  
+  # Authentication
+  auth:
+    type: ${GITHUB_AUTH_TYPE:token}  # token, app
+    token: ${GITHUB_TOKEN}
+    app_id: ${GITHUB_APP_ID}
+    private_key_path: ${GITHUB_PRIVATE_KEY_PATH}
+  
+  # PR settings
+  pr_settings:
+    auto_create_fixes: true
+    branch_prefix: "pr-analyzer/"
+    default_reviewers: []
+    labels: ["automated-fix", "pr-analyzer"]
+
+# Anthropic API Configuration
+anthropic:
+  api_key: ${ANTHROPIC_API_KEY}
+  api_url: "https://api.anthropic.com"
+  model: ${ANTHROPIC_MODEL:claude-3-sonnet-20240229}
+  timeout: 120s
+  
+  # Request settings
+  max_tokens: ${ANTHROPIC_MAX_TOKENS:4000}
+  temperature: ${ANTHROPIC_TEMPERATURE:0.1}
+  
+  # Rate limiting
+  rate_limit:
+    requests_per_minute: 50
+    tokens_per_minute: 40000
+
+# Logging Configuration
+logging:
+  level: ${LOG_LEVEL:info}
+  format: ${LOG_FORMAT:json}  # json, text
+  output: ${LOG_OUTPUT:stdout}  # stdout, file
+  
+  # File logging (if output=file)
+  file:
+    path: ${LOG_FILE_PATH:/var/log/pr-analyzer/app.log}
+    max_size: 100MB
+    max_files: 10
+    compress: true
+  
+  # Structured logging fields
+  fields:
+    service: "pr-analyzer"
+    version: ${APP_VERSION:1.0.0}
+    environment: ${ENVIRONMENT:production}
+
+# Monitoring Configuration
+monitoring:
+  enabled: ${MONITORING_ENABLED:true}
+  
+  # Metrics
+  metrics:
+    enabled: true
+    endpoint: "/metrics"
+    namespace: "pr_analyzer"
+    
+    # Prometheus settings
+    prometheus:
+      enabled: true
+      push_gateway: ${PROMETHEUS_PUSH_GATEWAY}
+      job_name: "pr-analyzer"
+  
+  # Health checks
+  health:
+    enabled: true
+    endpoint: "/health"
+    checks:
+      - database
+      - agentapi
+      - linear
+      - github
+  
+  # Tracing
+  tracing:
+    enabled: ${TRACING_ENABLED:false}
+    service_name: "pr-analyzer"
+    
+    # Jaeger settings
+    jaeger:
+      endpoint: ${JAEGER_ENDPOINT}
+      sampler_type: "const"
+      sampler_param: 1
+
+# Security Configuration
+security:
+  # CORS settings
+  cors:
+    enabled: true
+    allowed_origins: ${CORS_ALLOWED_ORIGINS:*}
+    allowed_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allowed_headers: ["*"]
+    max_age: 86400
+  
+  # Rate limiting
+  rate_limiting:
+    enabled: true
+    global_limit: 1000  # requests per minute
+    per_ip_limit: 100   # requests per minute per IP
+  
+  # Authentication
+  auth:
+    jwt_secret: ${JWT_SECRET}
+    token_expiry: ${JWT_EXPIRY:24h}
+    refresh_token_expiry: ${JWT_REFRESH_EXPIRY:7d}
+  
+  # TLS settings
+  tls:
+    enabled: ${TLS_ENABLED:false}
+    cert_file: ${TLS_CERT_FILE}
+    key_file: ${TLS_KEY_FILE}
+    min_version: "1.2"
+
+# Notification Configuration
+notifications:
+  # Webhook notifications
+  webhook:
+    enabled: ${NOTIFICATIONS_WEBHOOK_ENABLED:false}
+    url: ${NOTIFICATIONS_WEBHOOK_URL}
+    secret: ${NOTIFICATIONS_WEBHOOK_SECRET}
+    timeout: 10s
+    events:
+      - analysis.completed
+      - analysis.failed
+      - fix.completed
+      - fix.failed
+  
+  # Email notifications
+  email:
+    enabled: ${NOTIFICATIONS_EMAIL_ENABLED:false}
+    smtp_host: ${SMTP_HOST}
+    smtp_port: ${SMTP_PORT:587}
+    smtp_username: ${SMTP_USERNAME}
+    smtp_password: ${SMTP_PASSWORD}
+    from_address: ${EMAIL_FROM_ADDRESS}
+    
+    # Templates
+    templates:
+      analysis_completed: "templates/email/analysis_completed.html"
+      analysis_failed: "templates/email/analysis_failed.html"
+  
+  # Slack notifications
+  slack:
+    enabled: ${NOTIFICATIONS_SLACK_ENABLED:false}
+    webhook_url: ${SLACK_WEBHOOK_URL}
+    channel: ${SLACK_CHANNEL:#pr-analyzer}
+    username: "PR Analyzer"
+    icon_emoji: ":robot_face:"
+
+# Feature Flags
+features:
+  # Analysis features
+  enable_dynamic_analysis: ${FEATURE_DYNAMIC_ANALYSIS:true}
+  enable_security_scanning: ${FEATURE_SECURITY_SCANNING:true}
+  enable_performance_analysis: ${FEATURE_PERFORMANCE_ANALYSIS:true}
+  
+  # Integration features
+  enable_auto_fix: ${FEATURE_AUTO_FIX:true}
+  enable_linear_integration: ${FEATURE_LINEAR_INTEGRATION:true}
+  enable_github_integration: ${FEATURE_GITHUB_INTEGRATION:true}
+  
+  # Advanced features
+  enable_ml_suggestions: ${FEATURE_ML_SUGGESTIONS:false}
+  enable_code_generation: ${FEATURE_CODE_GENERATION:false}
+  enable_batch_processing: ${FEATURE_BATCH_PROCESSING:true}
+
+# Performance Configuration
+performance:
+  # Worker pools
+  workers:
+    analysis_workers: ${ANALYSIS_WORKERS:4}
+    webhook_workers: ${WEBHOOK_WORKERS:2}
+    notification_workers: ${NOTIFICATION_WORKERS:2}
+  
+  # Memory limits
+  memory:
+    max_heap_size: ${MAX_HEAP_SIZE:2GB}
+    gc_target_percentage: ${GC_TARGET_PERCENTAGE:100}
+  
+  # Timeouts
+  timeouts:
+    graceful_shutdown: 30s
+    read_header_timeout: 10s
+    write_timeout: 30s
+
+# Development/Debug Configuration
+debug:
+  enabled: ${DEBUG_ENABLED:false}
+  pprof_enabled: ${PPROF_ENABLED:false}
+  pprof_port: ${PPROF_PORT:6060}
+  
+  # Profiling
+  profiling:
+    cpu_profile: ${CPU_PROFILE:false}
+    memory_profile: ${MEMORY_PROFILE:false}
+    block_profile: ${BLOCK_PROFILE:false}
+    mutex_profile: ${MUTEX_PROFILE:false}
+

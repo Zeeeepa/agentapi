@@ -1,0 +1,366 @@
+# Docker Compose configuration for PR Analysis & CI/CD Automation System
+# This file provides a complete development and production environment
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:17-alpine
+    container_name: pr-analyzer-db
+    environment:
+      POSTGRES_DB: pr_analysis
+      POSTGRES_USER: pr_analyzer
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password_123}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - pr-analyzer-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pr_analyzer -d pr_analysis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: pr-analyzer-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password_123}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - pr-analyzer-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Webhook Handler Service
+  webhook-handler:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.webhook
+    container_name: pr-analyzer-webhook
+    environment:
+      - DATABASE_URL=postgresql://pr_analyzer:${DB_PASSWORD:-secure_password_123}@postgres:5432/pr_analysis
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password_123}@redis:6379/0
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - PORT=8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    networks:
+      - pr-analyzer-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  # Analysis Engine Service
+  analysis-engine:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.analysis
+    container_name: pr-analyzer-engine
+    environment:
+      - DATABASE_URL=postgresql://pr_analyzer:${DB_PASSWORD:-secure_password_123}@postgres:5432/pr_analysis
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password_123}@redis:6379/0
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LINEAR_API_KEY=${LINEAR_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ANALYSIS_WORKERS=${ANALYSIS_WORKERS:-4}
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./analyzers:/app/analyzers:ro
+      - analysis_cache:/app/cache
+    networks:
+      - pr-analyzer-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+
+  # AgentAPI Service
+  agentapi:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agentapi
+    container_name: pr-analyzer-agentapi
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - PORT=3284
+    ports:
+      - "3284:3284"
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - agentapi_sessions:/app/sessions
+    networks:
+      - pr-analyzer-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3284/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+
+  # NGINX Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: pr-analyzer-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    networks:
+      - pr-analyzer-network
+    depends_on:
+      - webhook-handler
+      - agentapi
+    restart: unless-stopped
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pr-analyzer-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - pr-analyzer-network
+    restart: unless-stopped
+
+  # Grafana Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pr-analyzer-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - pr-analyzer-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Jaeger Tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: pr-analyzer-jaeger
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger collector
+    networks:
+      - pr-analyzer-network
+    restart: unless-stopped
+
+  # Log Aggregation with Loki
+  loki:
+    image: grafana/loki:latest
+    container_name: pr-analyzer-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - pr-analyzer-network
+    restart: unless-stopped
+
+  # Promtail Log Shipper
+  promtail:
+    image: grafana/promtail:latest
+    container_name: pr-analyzer-promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./docker/promtail-config.yml:/etc/promtail/config.yml:ro
+      - ./logs:/var/log/pr-analyzer:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - pr-analyzer-network
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # Development Tools Container
+  dev-tools:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev-tools
+    container_name: pr-analyzer-dev-tools
+    environment:
+      - DATABASE_URL=postgresql://pr_analyzer:${DB_PASSWORD:-secure_password_123}@postgres:5432/pr_analysis
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password_123}@redis:6379/0
+    volumes:
+      - .:/workspace
+      - dev_tools_cache:/root/.cache
+    networks:
+      - pr-analyzer-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - dev
+    command: tail -f /dev/null  # Keep container running
+
+# Networks
+networks:
+  pr-analyzer-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Volumes
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  analysis_cache:
+    driver: local
+  agentapi_sessions:
+    driver: local
+  nginx_logs:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
+  dev_tools_cache:
+    driver: local
+
+# Development override
+# Use: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+---
+# docker-compose.dev.yml
+version: '3.8'
+
+services:
+  webhook-handler:
+    build:
+      target: development
+    environment:
+      - DEBUG_ENABLED=true
+      - PPROF_ENABLED=true
+    volumes:
+      - .:/app/src
+    command: air -c .air.toml  # Hot reload
+
+  analysis-engine:
+    build:
+      target: development
+    environment:
+      - DEBUG_ENABLED=true
+      - PPROF_ENABLED=true
+    volumes:
+      - .:/app/src
+    command: air -c .air.toml  # Hot reload
+
+  agentapi:
+    build:
+      target: development
+    environment:
+      - DEBUG_ENABLED=true
+    volumes:
+      - .:/app/src
+    command: air -c .air.toml  # Hot reload
+
+  # Additional development services
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: pr-analyzer-mailhog
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - pr-analyzer-network
+
+  # Database admin interface
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pr-analyzer-pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@pr-analyzer.dev
+      - PGADMIN_DEFAULT_PASSWORD=admin123
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - pr-analyzer-network
+    depends_on:
+      - postgres
+
+volumes:
+  pgadmin_data:
+    driver: local
+
